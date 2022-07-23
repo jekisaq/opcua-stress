@@ -1,4 +1,4 @@
-import { OPCUAServer, DataType, standardUnits, Variant, UAAnalogItem } from "node-opcua";
+import { OPCUAServer, DataType, Variant } from "node-opcua";
 
 interface Tag {
   value: number
@@ -8,12 +8,14 @@ interface RootState {
   tags: Array<Tag>
 }
 
-const tagCount = 1000;
+const tagsPerDevice = 1000;
+const deviceCount = 30;
+const overallTagCount = deviceCount * tagsPerDevice;
 
 const createTags = (): Array<Tag> => {
   let tags: Array<Tag> = [];
 
-  for (let i = 0; i < tagCount; i++) {
+  for (let i = 0; i < overallTagCount; i++) {
     tags.push({
       value: 0
     })
@@ -26,7 +28,7 @@ const state: RootState = {
   tags: createTags()
 };
 
-const startGeneration = () => {
+const startValueGeneration = () => {
   return setInterval(() => {
     for (let tag of state.tags) {
       tag.value = Math.floor(Math.random() * 100);
@@ -37,7 +39,14 @@ const startGeneration = () => {
 (async () => {
   try {
     const server = new OPCUAServer({
-      port: 4334
+      port: 4334,
+      serverCapabilities: {
+        maxSubscriptions: 10000,
+        maxSubscriptionsPerSession: 10000,
+        maxMonitoredItemsPerSubscription: 10000,
+        maxMonitoredItems: 1000000,
+        maxMonitoredItemsQueueSize: 10000000
+      }
     })
 
     await server.initialize()
@@ -50,44 +59,35 @@ const startGeneration = () => {
 
     const namespace = addressSpace.getOwnNamespace()
 
-    const device = namespace?.addObject({
+    const devices = new Array(deviceCount).fill(null).map((_, index) => namespace.addObject({
       organizedBy: addressSpace.rootFolder.objects,
-      browseName: "MyDevice"
+      browseName: `MyDevice ${index}`
+    }))
+
+    devices.forEach((device, deviceIndex) => {
+      for (let i = 0; i < tagsPerDevice; i++) {
+        namespace.addVariable({
+          componentOf: device,
+          browseName: `Sensor value ${i + 1}`,
+          minimumSamplingInterval: 100,
+          dataType: "Double",
+          value: {
+            get: () => {
+              return new Variant({
+                dataType: DataType.Double,
+                value: state.tags[deviceIndex * tagsPerDevice + i].value
+              })
+            }
+          }
+        })
+      }
     })
 
-    for (let i = 0; i < tagCount; i++) {
-      namespace.addAnalogDataItem<number, DataType.Double>({
-        componentOf: device,
-        browseName: `Sensor ${i + 1}`,
-        definition: "",
-        valuePrecision: 0.5,
-        engineeringUnitsRange: { low: 100 , high: 200},
-        instrumentRange: { low: -100 , high: +200},
-        engineeringUnits: standardUnits.degree_celsius,
-        minimumSamplingInterval: 100,
-        dataType: "Double",
-        value: {
-          get: () => {
-            return new Variant({
-              dataType: DataType.Double,
-              value: state.tags[i].value
-            })
-          }
-        }
-      })
-    }
-
-    const generationId = startGeneration()
-
-
+    const generationTimerId = startValueGeneration()
 
     addressSpace.registerShutdownTask(() => {
-      clearInterval(generationId)
+      clearInterval(generationTimerId)
     })
-
-
-
-
 
     await server.start()
     console.log("Server is now listening ... ( press CTRL+C to stop)")  
